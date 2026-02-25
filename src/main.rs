@@ -33,6 +33,8 @@ struct SimulationOptions {
     tournament_rounds: usize,
     /// Sigmoid steepness for score-to-outcome conversion (default: 5.0)
     sigmoid_steepness: f64,
+    /// Run steepness sweep (sensitivity analysis)
+    steepness_sweep: bool,
 }
 
 impl Default for SimulationOptions {
@@ -47,6 +49,7 @@ impl Default for SimulationOptions {
             tournament: None,
             tournament_rounds: 3,
             sigmoid_steepness: 5.0,
+            steepness_sweep: false,
         }
     }
 }
@@ -104,6 +107,7 @@ fn parse_args() -> SimulationOptions {
                     opts.sigmoid_steepness = args[i].parse().unwrap_or(5.0);
                 }
             }
+            "--steepness-sweep" => opts.steepness_sweep = true,
             "--help" | "-h" => {
                 println!("Virtual Creatures Evolution Simulator");
                 println!();
@@ -117,6 +121,7 @@ fn parse_args() -> SimulationOptions {
                 println!("  --tournament, -t F  Run Elo tournament from snapshot file");
                 println!("  --tournament-rounds N  Rounds per pair in tournament (default: 3)");
                 println!("  --sigmoid-steepness N  Sigmoid steepness for score→outcome (default: 5.0)");
+                println!("  --steepness-sweep      Run sensitivity analysis across steepness values");
                 println!("  --help, -h          Show this help message");
                 println!();
                 println!("Examples:");
@@ -139,7 +144,7 @@ fn main() {
     let opts = parse_args();
 
     if let Some(ref path) = opts.tournament {
-        run_tournament(path.clone(), opts.tournament_rounds, opts.sigmoid_steepness);
+        run_tournament(path.clone(), opts.tournament_rounds, opts.sigmoid_steepness, opts.steepness_sweep);
     } else if let Some(ref path) = opts.replay {
         run_replay(opts.clone(), path.clone());
     } else if opts.headless {
@@ -155,7 +160,7 @@ fn main() {
 /// It uses each creature's existing fitness score as their performance
 /// metric and runs a round-robin tournament to compute Elo ratings
 /// and Balduzzi's transitive-cyclic decomposition.
-fn run_tournament(snapshot_path: String, rounds_per_pair: usize, sigmoid_steepness: f64) {
+fn run_tournament(snapshot_path: String, rounds_per_pair: usize, sigmoid_steepness: f64, steepness_sweep: bool) {
     use arena::{CriterionId, Tournament, TournamentConfig};
     use std::collections::HashMap;
 
@@ -270,6 +275,33 @@ fn run_tournament(snapshot_path: String, rounds_per_pair: usize, sigmoid_steepne
             Err(e) => eprintln!("\nWarning: Failed to save results: {}", e),
         },
         Err(e) => eprintln!("\nWarning: Failed to serialize results: {}", e),
+    }
+
+    // Optional: steepness sweep for sensitivity analysis
+    if steepness_sweep {
+        println!();
+        let sweep_values = arena::sweep::default_steepness_values();
+        let sweep = arena::sweep::run_sweep(
+            &scores,
+            &sweep_values,
+            sigmoid_steepness,
+            rounds_per_pair,
+            CriterionId::LocomotionDistance,
+        );
+        print!("{}", arena::sweep::format_sweep(&sweep));
+
+        // Save sweep results
+        let sweep_path = format!(
+            "{}.sweep.json",
+            snapshot_path.trim_end_matches(".json")
+        );
+        match serde_json::to_string_pretty(&sweep) {
+            Ok(json) => match std::fs::write(&sweep_path, json) {
+                Ok(_) => println!("\nSweep results saved to {}", sweep_path),
+                Err(e) => eprintln!("\nWarning: Failed to save sweep: {}", e),
+            },
+            Err(e) => eprintln!("\nWarning: Failed to serialize sweep: {}", e),
+        }
     }
 }
 
