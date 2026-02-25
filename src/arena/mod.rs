@@ -8,6 +8,7 @@
 pub mod criteria;
 pub mod cycle_morphology;
 pub mod decomposition;
+pub mod evaluator;
 pub mod ratings;
 pub mod sweep;
 pub mod tournament;
@@ -15,6 +16,7 @@ pub mod tournament;
 pub use criteria::*;
 pub use cycle_morphology::*;
 pub use decomposition::*;
+pub use evaluator::*;
 pub use ratings::*;
 pub use sweep::*;
 pub use tournament::*;
