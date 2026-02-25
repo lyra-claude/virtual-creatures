@@ -21,6 +21,16 @@ pub struct TournamentConfig {
     pub rounds_per_pair: usize,
     /// Fitness criterion for this tournament.
     pub criterion: CriterionId,
+    /// Sigmoid steepness for score-to-outcome conversion.
+    ///
+    /// Controls how decisive fitness differences are:
+    /// - High values (e.g. 10.0): small fitness gaps → near-deterministic outcomes (chess-like)
+    /// - Low values (e.g. 1.0): even large gaps only tilt probabilities (poker-like)
+    /// - Default (5.0): a ~20% advantage ≈ 0.73 win probability
+    ///
+    /// Per Claudius's observation: morphological advantages are real but noisy,
+    /// so varying this parameter is a robustness check on decomposition results.
+    pub sigmoid_steepness: f64,
 }
 
 impl Default for TournamentConfig {
@@ -29,6 +39,7 @@ impl Default for TournamentConfig {
             elo_config: EloConfig::default(),
             rounds_per_pair: 3,
             criterion: CriterionId::LocomotionDistance,
+            sigmoid_steepness: 5.0,
         }
     }
 }
@@ -139,7 +150,7 @@ impl Tournament {
         let creature_b = scheduled.creature_b;
 
         // Convert raw scores to [0, 1] outcome for Elo
-        let outcome_a = scores_to_outcome(score_a, score_b);
+        let outcome_a = scores_to_outcome(score_a, score_b, self.config.sigmoid_steepness);
 
         // Record in Elo system
         self.elo.record_match(creature_a, creature_b, outcome_a);
@@ -230,7 +241,10 @@ fn generate_round_robin(participants: &[u64], rounds_per_pair: usize) -> Vec<Sch
 ///
 /// Uses a logistic function so that small differences produce outcomes
 /// near 0.5 (close to a draw) and large differences saturate toward 0 or 1.
-fn scores_to_outcome(score_a: f32, score_b: f32) -> f64 {
+///
+/// `steepness` controls the sigmoid: higher values make small fitness gaps
+/// more decisive. See `TournamentConfig::sigmoid_steepness` for details.
+fn scores_to_outcome(score_a: f32, score_b: f32, steepness: f64) -> f64 {
     let diff = (score_a - score_b) as f64;
 
     // If both scores are zero (or very close), it's a draw
@@ -244,8 +258,7 @@ fn scores_to_outcome(score_a: f32, score_b: f32) -> f64 {
     let mean = ((score_a + score_b) as f64 / 2.0).max(1e-6);
     let normalized_diff = diff / mean;
 
-    // Logistic with steepness 5.0: a ~20% advantage ≈ 0.73 win probability
-    1.0 / (1.0 + (-5.0 * normalized_diff).exp())
+    1.0 / (1.0 + (-steepness * normalized_diff).exp())
 }
 
 #[cfg(test)]
@@ -262,27 +275,53 @@ mod tests {
 
     #[test]
     fn test_scores_to_outcome_equal() {
-        let outcome = scores_to_outcome(1.0, 1.0);
+        let outcome = scores_to_outcome(1.0, 1.0, 5.0);
         assert!((outcome - 0.5).abs() < 0.001);
     }
 
     #[test]
     fn test_scores_to_outcome_win() {
-        let outcome = scores_to_outcome(2.0, 1.0);
+        let outcome = scores_to_outcome(2.0, 1.0, 5.0);
         assert!(outcome > 0.5, "Higher score should win: {}", outcome);
     }
 
     #[test]
     fn test_scores_to_outcome_loss() {
-        let outcome = scores_to_outcome(1.0, 2.0);
+        let outcome = scores_to_outcome(1.0, 2.0, 5.0);
         assert!(outcome < 0.5, "Lower score should lose: {}", outcome);
     }
 
     #[test]
     fn test_scores_to_outcome_symmetric() {
-        let outcome_a = scores_to_outcome(2.0, 1.0);
-        let outcome_b = scores_to_outcome(1.0, 2.0);
+        let outcome_a = scores_to_outcome(2.0, 1.0, 5.0);
+        let outcome_b = scores_to_outcome(1.0, 2.0, 5.0);
         assert!((outcome_a + outcome_b - 1.0).abs() < 0.001, "Outcomes should sum to 1");
+    }
+
+    #[test]
+    fn test_steepness_affects_decisiveness() {
+        // With steep sigmoid, a moderate advantage should produce near-certain outcomes
+        let steep = scores_to_outcome(1.5, 1.0, 20.0);
+        // With shallow sigmoid, same advantage should produce more uncertain outcomes
+        let shallow = scores_to_outcome(1.5, 1.0, 1.0);
+
+        assert!(steep > shallow, "Steeper sigmoid should be more decisive: steep={}, shallow={}", steep, shallow);
+        assert!(steep > 0.8, "Steep sigmoid with 50% advantage should be very decisive: {}", steep);
+        assert!(shallow < 0.7, "Shallow sigmoid with 50% advantage should be more uncertain: {}", shallow);
+    }
+
+    #[test]
+    fn test_steepness_symmetry() {
+        // Steepness shouldn't break symmetry
+        for steepness in [1.0, 5.0, 10.0, 20.0] {
+            let outcome_a = scores_to_outcome(2.0, 1.0, steepness);
+            let outcome_b = scores_to_outcome(1.0, 2.0, steepness);
+            assert!(
+                (outcome_a + outcome_b - 1.0).abs() < 0.001,
+                "Outcomes should sum to 1 at steepness={}: {} + {} = {}",
+                steepness, outcome_a, outcome_b, outcome_a + outcome_b
+            );
+        }
     }
 
     #[test]

@@ -31,6 +31,8 @@ struct SimulationOptions {
     tournament: Option<String>,
     /// Number of rounds per pair in tournament (default: 3)
     tournament_rounds: usize,
+    /// Sigmoid steepness for score-to-outcome conversion (default: 5.0)
+    sigmoid_steepness: f64,
 }
 
 impl Default for SimulationOptions {
@@ -44,6 +46,7 @@ impl Default for SimulationOptions {
             snapshot_dir: "snapshots".to_string(),
             tournament: None,
             tournament_rounds: 3,
+            sigmoid_steepness: 5.0,
         }
     }
 }
@@ -95,6 +98,12 @@ fn parse_args() -> SimulationOptions {
                     opts.tournament_rounds = args[i].parse().unwrap_or(3);
                 }
             }
+            "--sigmoid-steepness" => {
+                i += 1;
+                if i < args.len() {
+                    opts.sigmoid_steepness = args[i].parse().unwrap_or(5.0);
+                }
+            }
             "--help" | "-h" => {
                 println!("Virtual Creatures Evolution Simulator");
                 println!();
@@ -107,6 +116,7 @@ fn parse_args() -> SimulationOptions {
                 println!("  --snapshot-dir DIR  Directory for snapshots (default: snapshots/)");
                 println!("  --tournament, -t F  Run Elo tournament from snapshot file");
                 println!("  --tournament-rounds N  Rounds per pair in tournament (default: 3)");
+                println!("  --sigmoid-steepness N  Sigmoid steepness for score→outcome (default: 5.0)");
                 println!("  --help, -h          Show this help message");
                 println!();
                 println!("Examples:");
@@ -129,7 +139,7 @@ fn main() {
     let opts = parse_args();
 
     if let Some(ref path) = opts.tournament {
-        run_tournament(path.clone(), opts.tournament_rounds);
+        run_tournament(path.clone(), opts.tournament_rounds, opts.sigmoid_steepness);
     } else if let Some(ref path) = opts.replay {
         run_replay(opts.clone(), path.clone());
     } else if opts.headless {
@@ -145,7 +155,7 @@ fn main() {
 /// It uses each creature's existing fitness score as their performance
 /// metric and runs a round-robin tournament to compute Elo ratings
 /// and Balduzzi's transitive-cyclic decomposition.
-fn run_tournament(snapshot_path: String, rounds_per_pair: usize) {
+fn run_tournament(snapshot_path: String, rounds_per_pair: usize, sigmoid_steepness: f64) {
     use arena::{CriterionId, Tournament, TournamentConfig};
     use std::collections::HashMap;
 
@@ -162,6 +172,7 @@ fn run_tournament(snapshot_path: String, rounds_per_pair: usize) {
     println!("Snapshot: {} (generation {})", snapshot_path, snapshot.generation);
     println!("Creatures: {}", snapshot.individuals.len());
     println!("Rounds per pair: {}", rounds_per_pair);
+    println!("Sigmoid steepness: {:.1}", sigmoid_steepness);
     println!();
 
     // Build score map from fitness values
@@ -173,6 +184,7 @@ fn run_tournament(snapshot_path: String, rounds_per_pair: usize) {
 
     let config = TournamentConfig {
         rounds_per_pair,
+        sigmoid_steepness,
         criterion: CriterionId::LocomotionDistance,
         ..Default::default()
     };
@@ -226,6 +238,24 @@ fn run_tournament(snapshot_path: String, rounds_per_pair: usize) {
                     .collect();
                 println!("    Cycle {}: {:?}", i + 1, ids);
             }
+
+            // Morphological mapping: what body plan features create the cycles?
+            let morph_descriptors: HashMap<u64, genotype::analysis::MorphologyDescriptor> =
+                snapshot
+                    .individuals
+                    .iter()
+                    .map(|ind| (ind.id, ind.descriptor.clone()))
+                    .collect();
+
+            let morph_report = arena::cycle_morphology::analyze_cycles(
+                decomp,
+                &results.participants,
+                &morph_descriptors,
+                0.5, // Report features >0.5 SD apart
+            );
+
+            println!();
+            print!("{}", arena::cycle_morphology::format_report(&morph_report));
         }
     }
 
